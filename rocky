@@ -1,0 +1,200 @@
+#!/bin/bash
+set -e
+echo "===== Rocky Linux용 A++ 언어 고급문법 + 풀 빌더 패키지 자동 설치 스크립트 ====="
+
+# 0. 기본 패키지 및 의존성 설치
+sudo dnf install -y python3 python3-pip java git make gcc-c++ rpm-build
+
+pip3 install antlr4-python3-runtime==4.13 llvmlite
+
+# 1. ANTLR 다운로드 및 alias 설정
+if [ ! -f ~/antlr-4.13.1-complete.jar ]; then
+  curl -o ~/antlr-4.13.1-complete.jar https://www.antlr.org/download/antlr-4.13.1-complete.jar
+fi
+
+grep -qxF "alias antlr4='java -jar ~/antlr-4.13.1-complete.jar'" ~/.bashrc || echo "alias antlr4='java -jar ~/antlr-4.13.1-complete.jar'" >> ~/.bashrc
+source ~/.bashrc
+
+# 2. 프로젝트 디렉토리 준비
+rm -rf ~/a_plus_plus
+mkdir -p ~/a_plus_plus/{parser,semantic,irgen,runtime,bin,docs,tests}
+cd ~/a_plus_plus
+
+# 3. 고급 문법 문법 정의 APlusPlus.g4 작성
+cat > APlusPlus.g4 << 'EOF'
+grammar APlusPlus;
+
+program         : statement+ EOF ;
+
+statement
+    : var_decl
+    | assignment
+    | function_decl
+    | if_stmt
+    | while_stmt
+    | expr_stmt
+    | return_stmt
+    ;
+
+var_decl        : 'var' IDENT ':' type ('=' expression)? ';' ;
+assignment      : IDENT '=' expression ';' ;
+function_decl   : 'function' IDENT '(' param_list? ')' '->' type '{' statement* '}' ;
+param_list      : param (',' param)* ;
+param           : IDENT ':' type ;
+if_stmt         : 'if' '(' expression ')' '{' statement* '}' ('else' '{' statement* '}')? ;
+while_stmt      : 'while' '(' expression ')' '{' statement* '}' ;
+return_stmt     : 'return' expression ';' ;
+expr_stmt       : expression ';' ;
+
+expression      : expression ('+' | '-' | '*' | '/' | '==' | '!=' | '<' | '>' | '<=' | '>=') expression
+                | IDENT '(' arg_list? ')'
+                | IDENT
+                | NUMBER
+                | '(' expression ')'
+                ;
+
+arg_list        : expression (',' expression)* ;
+
+type            : 'Int32' | 'Int64' | 'Float32' | 'Float64' | 'Bool' | 'String' ;
+
+IDENT           : [a-zA-Z_][a-zA-Z_0-9]* ;
+NUMBER          : [0-9]+ ('.' [0-9]+)? ;
+WS              : [ \t\r\n]+ -> skip ;
+COMMENT         : '//' ~[\r\n]* -> skip ;
+EOF
+
+# 4. ANTLR 파서 생성
+antlr4 -Dlanguage=Python3 APlusPlus.g4 -o parser
+
+# 5. 파서 + AST 변환기 예제 (간단 구현)
+cat > parser/a_plus_plus_parser.py << 'EOF'
+from antlr4 import *
+from parser.APlusPlusLexer import APlusPlusLexer
+from parser.APlusPlusParser import APlusPlusParser
+
+class ASTNode:
+    pass
+
+class Program(ASTNode):
+    def __init__(self, statements):
+        self.statements = statements
+
+def parse_program(source_code):
+    input_stream = InputStream(source_code)
+    lexer = APlusPlusLexer(input_stream)
+    stream = CommonTokenStream(lexer)
+    parser = APlusPlusParser(stream)
+    tree = parser.program()
+
+    # TODO: 실제 AST 변환 로직 작성 필요
+    return tree
+EOF
+
+# 6. 타입체커, IR 생성기, JIT 실행기 기본 예제 생성
+mkdir -p semantic irgen runtime bin
+cat > semantic/type_checker.py << 'EOF'
+def type_check(ast):
+    print("타입 체크 중... (임시 구현)")
+EOF
+
+cat > irgen/ir_generator.py << 'EOF'
+def generate_ir(ast):
+    print("IR 생성 중... (임시 구현)")
+    return "LLVM IR 코드 문자열 (임시)"
+EOF
+
+cat > runtime/jit_executor.py << 'EOF'
+def execute_ir(ir_code):
+    print("IR 실행 중... (임시 구현)")
+EOF
+
+# 7. main.py 작성
+cat > main.py << 'EOF'
+import sys
+from parser.a_plus_plus_parser import parse_program
+from semantic.type_checker import type_check
+from irgen.ir_generator import generate_ir
+from runtime.jit_executor import execute_ir
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: a++ <source_file>")
+        return
+
+    with open(sys.argv[1], 'r') as f:
+        source_code = f.read()
+
+    ast = parse_program(source_code)
+    type_check(ast)
+    ir = generate_ir(ast)
+    execute_ir(ir)
+
+if __name__ == "__main__":
+    main()
+EOF
+
+chmod +x main.py
+
+# 8. 실행 스크립트 a++ 작성 (심플 래퍼)
+cat > bin/a++ << 'EOF'
+#!/bin/bash
+python3 ~/a_plus_plus/main.py "$@"
+EOF
+chmod +x bin/a++
+
+# 9. RPM 패키지 구조 준비
+mkdir -p rpm_package/usr/local/bin
+mkdir -p rpm_package/usr/local/share/a_plus_plus
+
+cp -r ~/a_plus_plus/parser rpm_package/usr/local/share/a_plus_plus/
+cp -r ~/a_plus_plus/semantic rpm_package/usr/local/share/a_plus_plus/
+cp -r ~/a_plus_plus/irgen rpm_package/usr/local/share/a_plus_plus/
+cp -r ~/a_plus_plus/runtime rpm_package/usr/local/share/a_plus_plus/
+cp ~/a_plus_plus/main.py rpm_package/usr/local/share/a_plus_plus/
+cp ~/a_plus_plus/bin/a++ rpm_package/usr/local/bin/
+
+# 10. RPM SPEC 파일 생성
+mkdir -p rpm_package/BUILD rpm_package/RPMS rpm_package/SOURCES rpm_package/SPECS rpm_package/tmp
+cat > rpm_package/SPECS/a-plus-plus.spec << 'EOF'
+Name: a-plus-plus
+Version: 0.1
+Release: 1%{?dist}
+Summary: A++ Programming Language - Advanced Language with Full Build Package
+License: MIT
+Group: Development/Languages
+BuildArch: noarch
+
+%description
+A++ Programming Language - Advanced Language with Full Build Package
+
+%prep
+
+%build
+
+%install
+mkdir -p %{buildroot}/usr/local/bin
+mkdir -p %{buildroot}/usr/local/share/a_plus_plus
+
+cp -r ../usr/local/bin/a++ %{buildroot}/usr/local/bin/
+cp -r ../usr/local/share/a_plus_plus %{buildroot}/usr/local/share/
+
+%files
+/usr/local/bin/a++
+/usr/local/share/a_plus_plus
+
+%changelog
+* $(date +"%a %b %d %Y") YourName <your.email@example.com> - 0.1-1
+- Initial package
+EOF
+
+# 11. RPM 패키지 빌드 (루트가 아니면 --define '_topdir' 경로 조정)
+rpmbuild --define "_topdir $PWD/rpm_package" -bb rpm_package/SPECS/a-plus-plus.spec
+
+echo "=== RPM 패키지 생성 완료 ==="
+echo "파일 위치: rpm_package/RPMS/noarch/a-plus-plus-0.1-1.noarch.rpm"
+
+echo "설치하려면:"
+echo "sudo dnf install ./rpm_package/RPMS/noarch/a-plus-plus-0.1-1.noarch.rpm"
+
+echo "그 후에 a++ 명령어로 실행하세요."
+echo "예시: a++ ~/a_plus_plus/tests/example.aplus"
